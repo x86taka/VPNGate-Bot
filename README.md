@@ -8,7 +8,7 @@ VPNGate discord Bot
 ![Sample](img/1.PNG "img")
 
 
-##Command
+## Command
 
 ```
 random
