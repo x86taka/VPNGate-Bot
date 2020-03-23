@@ -9,7 +9,7 @@ import (
 func Config() (DbConfig, bool) {
 	viper.SetConfigName("config") // name of config file (without extension)
 	viper.SetConfigType("yaml")   // REQUIRED if the config file does not have the extension in the name
-	f, err := os.Open("config.yaml")
+	f, err := os.Open("config.conf")
 	if err != nil {
 		dbconfig := DbConfig{
 			Dialect:    "mysql",
@@ -20,7 +20,7 @@ func Config() (DbConfig, bool) {
 		}
 		viper.SetDefault("DB", dbconfig)
 
-		viper.WriteConfigAs("config.yaml")
+		viper.WriteConfigAs("config.conf")
 	}
 	if err := viper.ReadConfig(f); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
