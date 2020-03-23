@@ -79,8 +79,11 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	csvdata = lib.GetServers()
-	lastUpdate = time.Now()
+	go func() {
+		csvdata = lib.GetServers()
+		lastUpdate = time.Now()
+		time.Sleep(10 * time.Minute)
+	}()
 
 	fmt.Println("Listening...")
 	<-stopBot //プログラムが終了しないようロック
