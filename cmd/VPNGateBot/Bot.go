@@ -3,14 +3,13 @@ package main
 import (
 	"fmt"
 	"github.com/x86taka/VPNGate-Bot/lib"
+	"golang.org/x/xerrors"
 	"math/rand"
 
 	_ "github.com/jinzhu/gorm/dialects/mysql"
 	"io/ioutil"
 	"log"
-	"net"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,45 +17,10 @@ import (
 )
 
 var (
-	stopBot    = make(chan bool)
 	vcsession  *discordgo.VoiceConnection
+	gate       *lib.VPNGate
 	lastUpdate = time.Now()
 )
-
-var csvdata []lib.ServerList
-
-func Ping(ip string, port string) string {
-	/* 	out, err := exec.Command("php", "-d", "display_errors=off", "script/ping.php", ip, port).Output()
-	   	if err != nil {
-	   		log.Println(err)
-	   	}
-		   return string(out) */
-	str := ""
-	current := 0
-	var conn net.Conn = nil
-	d := net.Dialer{Timeout: 2 * time.Second}
-	for {
-		var err error
-		start := time.Now()
-		if conn == nil {
-			conn, err = d.Dial("tcp", ip+":"+port)
-		}
-		end := time.Now()
-		if err != nil {
-			str += "Host Down\n"
-			fmt.Println(err)
-		} else {
-			str += strconv.FormatFloat((end.Sub(start)).Seconds()*1000.0, 'f', 2, 64)
-			str += " ms"
-		}
-		conn = nil
-		current++
-		if current == 1 {
-			break
-		}
-	}
-	return str
-}
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
@@ -79,15 +43,11 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	go func() {
-		csvdata = lib.GetServers()
-		lastUpdate = time.Now()
-		time.Sleep(10 * time.Minute)
-	}()
 
 	fmt.Println("Listening...")
-	<-stopBot //プログラムが終了しないようロック
-	return
+
+	gate = lib.NewVPNGate()
+	gate.Run()
 }
 
 func onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -101,25 +61,49 @@ func onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	switch {
 	case strings.HasPrefix(m.Content, "random"):
 		cn := strings.Replace(m.Content, "random", "", 1)
-		sendMessage(s, c, RandomCountry(csvdata, cn))
+		if h, err := RandomCountry(cn); err == nil {
+			sendMessage(s, c, h)
+		} else {
+			errorMessage(s, c, err)
+		}
 		break
 	case strings.HasPrefix(m.Content, "topsession"):
 		cn := strings.Replace(m.Content, "topsession", "", 1)
-		sendMessage(s, c, TopSession(csvdata, cn))
-		break
+		if h, err := TopSession(cn); err == nil {
+			sendMessage(s, c, h)
+		} else {
+			errorMessage(s, c, err)
+		}
 	case strings.HasPrefix(m.Content, "topspeed"):
 		cn := strings.Replace(m.Content, "topspeed", "", 1)
-		sendMessage(s, c, Top(csvdata, cn))
+		if h, err := Top(cn); err == nil {
+			sendMessage(s, c, h)
+		} else {
+			errorMessage(s, c, err)
+		}
 		break
 	case m.Content == "ALL":
-		sendMessage(s, c, ALL(csvdata))
+		if h, err := ALL(); err == nil {
+			sendMessage(s, c, h)
+		} else {
+			errorMessage(s, c, err)
+		}
 		break
 	}
 }
 
 //メッセージを送信する関数
-func sendMessage(s *discordgo.Session, c *discordgo.Channel, msg string) {
-	_, err := s.ChannelMessageSend(c.ID, msg+"\n LastUpdate "+lastUpdate.Format("2006/1/2 15:04:05"))
+func sendMessage(s *discordgo.Session, c *discordgo.Channel, lists *[]lib.ServerList) {
+	var res string
+	for _, list := range *lists {
+		if p, ok := list.OriginalPing(); ok {
+			res += fmt.Sprintf("```%s\nOriginal Ping: %s```", list.ToString(), p)
+		} else {
+			res += fmt.Sprintf("```%s\nHostDown!!```", list.ToString())
+		}
+	}
+
+	_, err := s.ChannelMessageSend(c.ID, res+"\n LastUpdate "+gate.GetUpdateTime().Format("2006/1/2 15:04:05"))
 
 	//log.Println(">>> " + msg)
 	if err != nil {
@@ -127,24 +111,30 @@ func sendMessage(s *discordgo.Session, c *discordgo.Channel, msg string) {
 	}
 }
 
-func Random(servers []lib.ServerList) string {
-	var res string = ""
-	if len(servers) == 0 {
-		return "Error"
+func errorMessage(s *discordgo.Session, c *discordgo.Channel, err error) {
+
+	_, err2 := s.ChannelMessageSend(c.ID, err.Error()+time.Now().Format("2006/1/2 15:04:05"))
+	log.Println(">>> " + err.Error() + time.Now().Format("2006/1/2 15:04:05"))
+	if err2 != nil {
+		log.Println("Error sending message: ", err2)
 	}
-	ipport := lib.GetIpPort(servers[0].OpenVPN_ConfigData_Base64)
-	res = fmt.Sprintf("```%s\nOriginal Ping: %s```", servers[0].ToString(), Ping(ipport[0], ipport[1]))
-	return res
 }
 
-func RandomCountry(servers []lib.ServerList, cn string) string {
+func Random() (*[]lib.ServerList, error) {
+	servers := gate.GetServers()
+	if len(servers) == 0 {
+		return nil, xerrors.New("ServerList 0 Len")
+	}
+	return &[]lib.ServerList{servers[0]}, nil
+}
+
+func RandomCountry(cn string) (*[]lib.ServerList, error) {
 	cn = strings.ToUpper(cn)
-	var res string = ""
 	count := 0
 	var server lib.ServerList
-	for _, server = range servers {
+	for _, server = range gate.GetServers() {
 		if count >= 50 {
-			return "Not Found"
+			return nil, xerrors.New("Error Not Found")
 		}
 
 		if server.CountryShort == cn {
@@ -155,90 +145,72 @@ func RandomCountry(servers []lib.ServerList, cn string) string {
 		}
 		count++
 	}
-	ipport := lib.GetIpPort(server.OpenVPN_ConfigData_Base64)
-	res = fmt.Sprintf("```%s\nOriginal Ping: %s```", server.ToString(), Ping(ipport[0], ipport[1]))
-	return res
+	return &[]lib.ServerList{server}, nil
 }
 
-func Top(servers []lib.ServerList, cn string) string {
+func Top(cn string) (*[]lib.ServerList, error) {
+	servers := gate.GetServers()
 	cn = strings.ToUpper(cn)
-	var res string = ""
 	top := 0
-	topindex := 0
+	sliceIndex := 0
 	count := 0
 	i := 0
 	for i = 2; i < len(servers)-2; i++ {
 		server := servers[i]
 		if server.CountryShort == cn {
 			if server.Speed > top {
-				topindex = i
+				sliceIndex = i
 				top = server.Speed
 			}
 		}
 		if strings.HasPrefix(strings.ToUpper(server.Country), cn) {
 			if server.Speed > top {
-				topindex = i
+				sliceIndex = i
 				top = server.Speed
 			}
 		}
 		count++
 	}
-	if topindex == 0 {
-		return "Not Found"
+	if sliceIndex == 0 {
+		return nil, xerrors.New("Error Not Found")
 	}
-	server := servers[topindex]
-	ipport := lib.GetIpPort(server.OpenVPN_ConfigData_Base64)
-	res = fmt.Sprintf("```%s\nOriginal Ping: %s```", server.ToString(), Ping(ipport[0], ipport[1]))
-	return res
+	return &[]lib.ServerList{servers[sliceIndex]}, nil
+
 }
 
-func TopSession(servers []lib.ServerList, cn string) string {
+func TopSession(cn string) (*[]lib.ServerList, error) {
+	servers := gate.GetServers()
 	cn = strings.ToUpper(cn)
-	var res string = ""
 	top := 0
-	topindex := 0
+	sliceIndex := 0
 	count := 0
 	i := 0
 	for i = 2; i < len(servers)-2; i++ {
 		server := servers[i]
 		if server.CountryShort == cn {
 			if server.NumVpnSessions > top {
-				topindex = i
+				sliceIndex = i
 				top = server.NumVpnSessions
 			}
 		}
 		if strings.HasPrefix(strings.ToUpper(server.Country), cn) {
 			if server.NumVpnSessions > top {
-				topindex = i
+				sliceIndex = i
 				top = server.NumVpnSessions
 			}
 		}
 		count++
 	}
-	if topindex == 0 {
-		return "Not Found"
+	if sliceIndex == 0 {
+		return nil, xerrors.New("Error Not Found")
 	}
-	server := servers[topindex]
-	ipport := lib.GetIpPort(server.OpenVPN_ConfigData_Base64)
-	res = fmt.Sprintf("```%s\nOriginal Ping: %s```", server.ToString(), Ping(ipport[0], ipport[1]))
-	return res
+	return &[]lib.ServerList{servers[sliceIndex]}, nil
 }
 
-func ALL(servers []lib.ServerList) string {
-	var res string = ""
-	i := 0
-	count := 0
-	for i = 2; i < len(servers)-2; i++ {
-		if count >= 10 {
-			break
-		}
-		server := servers[i]
-		ipport := lib.GetIpPort(server.OpenVPN_ConfigData_Base64)
-		res += fmt.Sprintf("```%s\nOriginal Ping: %s```", server.ToString(), Ping(ipport[0], ipport[1]))
-		count++
+func ALL() (*[]lib.ServerList, error) {
+	if len(gate.GetServers()) <= 10 || len(gate.GetServers()) <= 0 {
+		return nil, xerrors.New("Error Not Found")
 	}
-	if res == "" {
-		res = "Error...."
-	}
-	return res
+	servers := gate.GetServers()[:10]
+	return &servers, nil
 }

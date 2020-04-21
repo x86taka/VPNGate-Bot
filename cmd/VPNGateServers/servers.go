@@ -10,26 +10,33 @@ import (
 	"time"
 )
 
-func connectGorm(dbConfig lib.DbConfig) *gorm.DB {
+var (
+	gate *lib.VPNGate
+	db   *gorm.DB
+)
+
+func connectGorm(dbConfig lib.DbConfig) error {
 	connectTemplate := "%s:%s@%s/%s?parseTime=true"
 	connect := fmt.Sprintf(connectTemplate, dbConfig.DBUser, dbConfig.DBPass, dbConfig.DBProtocol, dbConfig.DBName)
-	db, err := gorm.Open(dbConfig.Dialect, connect)
+	var err error
+	db, err = gorm.Open(dbConfig.Dialect, connect)
 
 	if err != nil {
-		log.Println(err.Error())
+		return err
 	}
-
-	return db
+	return nil
 }
 
 func main() {
 	var db *gorm.DB
 	if dbconfig, ok := lib.Config(); ok {
-		db = connectGorm(dbconfig)
+		if err := connectGorm(dbconfig); err != nil {
+			panic(err)
+		}
 		db.Set("gorm:table_options", "ENGINE = InnoDB").AutoMigrate(&lib.Host{})
 		db.LogMode(false)
 	} else {
-		log.Panic("Config NotFound")
+		log.Panic("Config NotFound!! Please Edit config.yaml")
 	}
 
 	var all []lib.Host
@@ -37,25 +44,34 @@ func main() {
 	for _, host := range all {
 		fmt.Println(host.HostName + "	" + host.IP)
 	}
+	gate = lib.NewVPNGate()
+	go gate.Run()
 	for {
-		for _, server := range lib.GetServers() {
-
-			IP_Port := lib.GetIpPort(server.OpenVPN_ConfigData_Base64)
-			host := &lib.Host{}
-			host.HostName = server.HostName
-			if db.First(&host).RecordNotFound() {
-				host.IP = IP_Port[0]
-				port, _ := strconv.Atoi(IP_Port[1])
-				host.PORT = port
-				db.Create(&host)
-			} else {
-				host.IP = IP_Port[0]
-				port, _ := strconv.Atoi(IP_Port[1])
-				host.PORT = port
-				db.Update(&host)
-			}
+		t := time.NewTicker(15 * time.Minute)
+		for {
+			insert()
+			<-t.C
 		}
-		time.Sleep(2 * time.Minute)
 	}
+}
 
+func insert() {
+	for _, server := range gate.GetServers() {
+
+		IP, Port := server.GetIpPort()
+		host := &lib.Host{}
+		host.HostName = server.HostName
+		if db.First(&host).RecordNotFound() {
+			host.IP = IP
+			port, _ := strconv.Atoi(IP)
+			host.PORT = port
+			db.Create(&host)
+		} else {
+			host.IP = IP
+			port, _ := strconv.Atoi(Port)
+			host.PORT = port
+			db.Update(&host)
+		}
+	}
+	time.Sleep(2 * time.Minute)
 }

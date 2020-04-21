@@ -1,17 +1,44 @@
 package lib
 
 import (
-	"encoding/base64"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-func getData() (string, error) {
+type VPNGate struct {
+	lastUpdate  time.Time
+	serverLists *[]ServerList
+	lock        sync.Mutex
+}
+
+func NewVPNGate() *VPNGate {
+	return &VPNGate{}
+}
+
+func (v *VPNGate) Run() {
+	t := time.NewTicker(15 * time.Minute)
+	for {
+		v.update()
+		<-t.C
+	}
+}
+
+func (v *VPNGate) GetServers() []ServerList {
+	v.lock.Lock()
+	v.lock.Unlock()
+	return *v.serverLists
+}
+
+func (v *VPNGate) GetUpdateTime() time.Time {
+	return v.lastUpdate
+}
+
+func (v *VPNGate) getHTTPRequest() (string, error) {
 	url := "https://www.vpngate.net/api/iphone/"
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:58.0) Gecko/20100101 Firefox/58.0")
@@ -29,22 +56,13 @@ func getData() (string, error) {
 	}
 	return string(b), nil
 }
-func GetIpPort(b64 string) []string {
-	data, _ := base64.StdEncoding.DecodeString(b64)
-	datas := string(data)
-	datas = datas[strings.LastIndex(datas, "remote"):]
-	ipport := strings.Split(datas[:strings.Index(datas, "\n")-1], " ")
-	var re []string
-	re = append(re, ipport[1])
-	re = append(re, ipport[2])
-	return re
-}
 
-func GetServers() []ServerList {
-	res, err := getData()
+func (v *VPNGate) update() error {
+	res, err := v.getHTTPRequest()
+	v.lock.Lock()
+	defer v.lock.Unlock()
 	if err != nil {
-		log.Println(err)
-		return []ServerList{}
+		return err
 	}
 	var result []ServerList
 	csv := strings.Split(res, "\n")
@@ -76,30 +94,7 @@ func GetServers() []ServerList {
 		}
 		result = append(result, s)
 	}
-	return result
-}
-
-func (this *ServerList) ToString() string {
-	return fmt.Sprintf(
-		"HostName: %s.opengw.net\n"+
-			"IP: %s\n"+
-			"Score: %d\n"+
-			"Ping: %d\n"+
-			"Speed: %d\n"+
-			"Country: %s\n"+
-			"Sessions: %d\n"+
-			"Uptime: %f Hour\n"+
-			"TotalUser: %s\n"+
-			"TotalTraffic: %dTB",
-		this.HostName,
-		this.IP,
-		this.Score,
-		this.Ping,
-		this.Speed,
-		this.CountryShort,
-		this.NumVpnSessions,
-		this.Uptime.Hours(),
-		this.TotalUser,
-		this.TotalTraffic,
-	)
+	v.serverLists = &result
+	v.lastUpdate = time.Now()
+	return nil
 }
