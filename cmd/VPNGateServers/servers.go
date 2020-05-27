@@ -28,7 +28,6 @@ func connectGorm(dbConfig lib.DbConfig) error {
 }
 
 func main() {
-	var db *gorm.DB
 	if dbconfig, ok := lib.Config(); ok {
 		if err := connectGorm(dbconfig); err != nil {
 			panic(err)
@@ -46,6 +45,7 @@ func main() {
 	}
 	gate = lib.NewVPNGate()
 	go gate.Run()
+	time.Sleep(1 * time.Second)
 	for {
 		t := time.NewTicker(15 * time.Minute)
 		for {
